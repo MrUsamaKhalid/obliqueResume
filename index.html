@@ -7,9 +7,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Playfair+Display:ital,wght@0,400;0,700;1,400;1,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js" integrity="sha384-MhvFknC0AhqKZXwSCyPeIirpE1IhTafmLXTvTCai5pxjAqFcqEAAqKH/2lXrFVPn" crossorigin="anonymous"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" integrity="sha384-VQePqH/QE94Buf4g/4MI5NrqDYjdqT7JW6KzhieQUlw6w7U7VD59fPqCAunpXEu6" crossorigin="anonymous"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js" integrity="sha384-RtnJVik7wuedvaD33OAmqud3NpHYg9cC7fusyNSj4XOXRJnBWGONH1Q5bJ4xuJXZ" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" integrity="sha384-DGyLxAyjq0f9SPpVevD6IgztCFlnMF6oW/XQGmfe+IsZ8TqEiDrcHkMLKI6fiB/Z" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" integrity="sha384-gTGxhz21lVGYNMcdJOyq01Edg0jhn/c22nsx0kyqP0TxaV5WVdsSH1fSDUf5YJj1" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.2/babel.min.js" integrity="sha384-dqDn4UOhYWNxmtwnMX6yC3WtZZ6Li8rF6rLB7cu0i/R7btvb+p+kObgEHto7VsJK" crossorigin="anonymous"></script>
   <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js" integrity="sha384-ZZ1pncU3bQe8y31yfZdMFdSpttDoPmOZg2wguVK9almUodir1PghgT0eY7Mrty8H" crossorigin="anonymous"></script>
   <script src="https://unpkg.com/jspdf@2.5.2/dist/jspdf.umd.min.js" integrity="sha384-en/ztfPSRkGfME4KIm05joYXynqzUgbsG5nMrj/xEFAHXkeZfO3yMK8QQ+mP7p1/" crossorigin="anonymous"></script>
   <!-- Firebase Auth -->
@@ -3767,7 +3767,7 @@
         [aiConnections]
       );
 
-      // Save AI connections to localStorage when they change
+      // Keys are now managed through SecureKeyVault (no-op for backward compat)
       useEffect(() => { saveAIConnections(aiConnections); }, [aiConnections]);
 
       // Run AI ATS analysis on all connected providers (debounced)
@@ -3779,7 +3779,7 @@
 
           connectedAIs.forEach(([provider, conn]) => {
             setAiScores(prev => ({ ...prev, [provider]: { ...prev[provider], status: 'loading' } }));
-            analyzeATSWithAI(provider, conn.key, text)
+            analyzeATSWithAI(provider, null, text)
               .then(result => {
                 setAiScores(prev => ({
                   ...prev,
@@ -4477,6 +4477,7 @@
                         </div>
                         {isConnected && (
                           <button onClick={() => {
+                            SecureKeyVault.removeKey(key);
                             const updated = { ...aiConnections };
                             delete updated[key];
                             setAiConnections(updated);
@@ -4493,7 +4494,7 @@
                           <input
                             type="password"
                             placeholder={p.keyPrefix ? `${p.keyPrefix}...` : 'API key...'}
-                            defaultValue={conn?.key || ''}
+                            defaultValue=""
                             id={`ai-key-${key}`}
                             style={{
                               flex: 1, padding: '7px 10px', background: theme.bgElevated,
@@ -4513,7 +4514,11 @@
                               btn.disabled = true;
                               try {
                                 await testAIConnection(key, apiKey);
-                                setAiConnections(prev => ({ ...prev, [key]: { key: apiKey, connected: true } }));
+                                // Store key securely in encrypted vault
+                                await SecureKeyVault.setKey(key, apiKey);
+                                SecureKeyVault.saveMeta(key, { connected: true });
+                                input.value = ''; // Clear plaintext from DOM immediately
+                                setAiConnections(prev => ({ ...prev, [key]: { key: '••••••••', connected: true } }));
                                 btn.textContent = 'Connected!';
                                 btn.style.background = '#22c55e';
                               } catch (err) {
@@ -4882,9 +4887,12 @@ Score strictly. Real ATS systems reject 75% of resumes. Be honest and critical.
 Resume data:
 `;
 
-    const analyzeATSWithAI = async (provider, apiKey, resumeText) => {
+    const analyzeATSWithAI = async (provider, apiKeyOrNull, resumeText) => {
       const config = AI_PROVIDERS[provider];
       if (!config) throw new Error('Unknown provider');
+      // Fetch key securely from vault (ignore any passed-in key)
+      const apiKey = await SecureKeyVault.getKey(provider);
+      if (!apiKey) throw new Error('No API key found — please re-enter your key');
       const { url, headers } = buildAIRequest(provider, apiKey);
       const response = await fetch(url, {
         method: 'POST',
@@ -4919,9 +4927,12 @@ Resume data:
       return { url, headers };
     };
 
-    const testAIConnection = async (provider, apiKey) => {
+    const testAIConnection = async (provider, apiKeyParam) => {
       const config = AI_PROVIDERS[provider];
       if (!config) throw new Error('Unknown provider');
+      // Use provided key (fresh from input) or fetch from vault
+      const apiKey = apiKeyParam || await SecureKeyVault.getKey(provider);
+      if (!apiKey) throw new Error('No API key available');
       const { url, headers } = buildAIRequest(provider, apiKey);
       const response = await fetch(url, {
         method: 'POST',
@@ -5017,56 +5028,178 @@ Resume data:
       return text;
     };
 
-    // ─── SECURE KEY STORAGE ─────────────────────────────────
-    // Obfuscate API keys in localStorage to prevent casual exposure
-    const _obfuscate = (str) => {
-      if (!str) return str;
-      try { return btoa(str.split('').map((c,i) => String.fromCharCode(c.charCodeAt(0) ^ (42 + (i % 17)))).join('')); }
-      catch { return str; }
-    };
-    const _deobfuscate = (str) => {
-      if (!str) return str;
-      try { return atob(str).split('').map((c,i) => String.fromCharCode(c.charCodeAt(0) ^ (42 + (i % 17)))).join(''); }
-      catch { return str; }
-    };
-    const _sanitizeConnections = (conns) => {
-      // Whitelist only known safe keys to prevent prototype pollution
-      const allowed = ['provider','apiKey','model','baseUrl','connected'];
-      const clean = {};
-      for (const [k, v] of Object.entries(conns)) {
-        if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
-        if (typeof v === 'object' && v !== null) {
-          clean[k] = {};
-          for (const [ik, iv] of Object.entries(v)) {
-            if (allowed.includes(ik)) clean[k][ik] = typeof iv === 'string' ? iv : String(iv);
+    // ─── SECURE KEY VAULT (AES-256-GCM + Memory-Only) ────────────────
+    // API keys are encrypted with AES-256-GCM using a per-session key
+    // derived from Web Crypto API. Keys live in a sealed closure — never
+    // in the DOM, never in global scope, never in plain text on disk.
+    // sessionStorage is used so keys are wiped when the tab closes.
+    const SecureKeyVault = (() => {
+      // Private closure — no external access to raw keys
+      const _vault = new Map(); // provider -> plaintext key (memory only)
+      let _cryptoKey = null;
+
+      // Generate a per-session AES-256-GCM key (lives only in memory)
+      const _getKey = async () => {
+        if (_cryptoKey) return _cryptoKey;
+        _cryptoKey = await crypto.subtle.generateKey(
+          { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']
+        );
+        return _cryptoKey;
+      };
+
+      // Encrypt a string to base64(iv + ciphertext)
+      const _encrypt = async (plaintext) => {
+        if (!plaintext) return '';
+        const key = await _getKey();
+        const iv = crypto.getRandomValues(new Uint8Array(12));
+        const encoded = new TextEncoder().encode(plaintext);
+        const ciphertext = await crypto.subtle.encrypt(
+          { name: 'AES-GCM', iv }, key, encoded
+        );
+        // Combine IV + ciphertext into one buffer
+        const combined = new Uint8Array(iv.length + ciphertext.byteLength);
+        combined.set(iv);
+        combined.set(new Uint8Array(ciphertext), iv.length);
+        return btoa(String.fromCharCode(...combined));
+      };
+
+      // Decrypt base64(iv + ciphertext) back to string
+      const _decrypt = async (encoded) => {
+        if (!encoded) return '';
+        try {
+          const key = await _getKey();
+          const combined = Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
+          const iv = combined.slice(0, 12);
+          const ciphertext = combined.slice(12);
+          const decrypted = await crypto.subtle.decrypt(
+            { name: 'AES-GCM', iv }, key, ciphertext
+          );
+          return new TextDecoder().decode(decrypted);
+        } catch { return ''; } // Key changed (new session) — old data is unrecoverable
+      };
+
+      const _sanitize = (conns) => {
+        const allowed = ['provider','apiKey','model','baseUrl','connected'];
+        const clean = {};
+        for (const [k, v] of Object.entries(conns)) {
+          if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+          if (typeof v === 'object' && v !== null) {
+            clean[k] = {};
+            for (const [ik, iv] of Object.entries(v)) {
+              if (allowed.includes(ik)) clean[k][ik] = typeof iv === 'string' ? iv : String(iv);
+            }
           }
         }
-      }
-      return clean;
-    };
-    // Load/save AI connections from localStorage (keys are obfuscated)
-    const loadAIConnections = () => {
+        return clean;
+      };
+
+      return Object.freeze({
+        // Store a key in the in-memory vault + encrypted sessionStorage backup
+        async setKey(provider, apiKey) {
+          if (!provider || typeof provider !== 'string') return;
+          _vault.set(provider, apiKey || '');
+          try {
+            const encrypted = await _encrypt(apiKey || '');
+            const stored = JSON.parse(sessionStorage.getItem('oblique:ai-enc') || '{}');
+            stored[provider] = encrypted;
+            sessionStorage.setItem('oblique:ai-enc', JSON.stringify(stored));
+          } catch {}
+        },
+
+        // Get a key from memory vault (fast) or fall back to encrypted sessionStorage
+        async getKey(provider) {
+          if (_vault.has(provider)) return _vault.get(provider);
+          try {
+            const stored = JSON.parse(sessionStorage.getItem('oblique:ai-enc') || '{}');
+            if (stored[provider]) {
+              const decrypted = await _decrypt(stored[provider]);
+              if (decrypted) _vault.set(provider, decrypted);
+              return decrypted;
+            }
+          } catch {}
+          return '';
+        },
+
+        // Remove a key from both vault and storage
+        removeKey(provider) {
+          _vault.delete(provider);
+          try {
+            const stored = JSON.parse(sessionStorage.getItem('oblique:ai-enc') || '{}');
+            delete stored[provider];
+            sessionStorage.setItem('oblique:ai-enc', JSON.stringify(stored));
+          } catch {}
+        },
+
+        // Wipe everything
+        clear() {
+          _vault.clear();
+          try { sessionStorage.removeItem('oblique:ai-enc'); } catch {}
+        },
+
+        // Get all connected providers (without exposing keys)
+        getProviders() {
+          try {
+            const meta = JSON.parse(sessionStorage.getItem('oblique:ai-meta') || '{}');
+            return Object.keys(meta).filter(k => meta[k]?.connected);
+          } catch { return []; }
+        },
+
+        // Save provider metadata (everything except the key)
+        saveMeta(provider, meta) {
+          try {
+            const stored = JSON.parse(sessionStorage.getItem('oblique:ai-meta') || '{}');
+            stored[provider] = { connected: !!meta?.connected, provider: provider };
+            sessionStorage.setItem('oblique:ai-meta', JSON.stringify(stored));
+          } catch {}
+        },
+
+        getMeta() {
+          try { return JSON.parse(sessionStorage.getItem('oblique:ai-meta') || '{}'); }
+          catch { return {}; }
+        }
+      });
+    })();
+
+    // Wipe keys on page unload for extra safety
+    window.addEventListener('beforeunload', () => { SecureKeyVault.clear(); });
+
+    // Migrate any old localStorage keys to new vault, then delete old data
+    (async () => {
       try {
-        const saved = localStorage.getItem('oblique:ai-connections');
-        if (!saved) return {};
-        const parsed = JSON.parse(saved);
+        const old = localStorage.getItem('oblique:ai-connections');
+        if (old) {
+          const parsed = JSON.parse(old);
+          for (const [k, v] of Object.entries(parsed)) {
+            if (k === '__proto__' || k === 'constructor') continue;
+            if (v?.apiKey) {
+              // Attempt to deobfuscate old XOR format
+              let key = v.apiKey;
+              try { key = atob(key).split('').map((c,i) => String.fromCharCode(c.charCodeAt(0) ^ (42 + (i % 17)))).join(''); } catch {}
+              await SecureKeyVault.setKey(k, key);
+              SecureKeyVault.saveMeta(k, { connected: !!v.connected });
+            }
+          }
+          localStorage.removeItem('oblique:ai-connections'); // Delete old insecure data
+        }
+      } catch {}
+    })();
+
+    // Compatibility wrappers for existing code
+    const loadAIConnections = () => {
+      // Returns sync metadata; keys must be fetched async via SecureKeyVault.getKey()
+      try {
+        const meta = SecureKeyVault.getMeta();
         const result = {};
-        for (const [k, v] of Object.entries(parsed)) {
+        for (const [k, v] of Object.entries(meta)) {
           if (k === '__proto__' || k === 'constructor') continue;
-          result[k] = { ...v, apiKey: v.apiKey ? _deobfuscate(v.apiKey) : '' };
+          result[k] = { ...v, key: '••••••••', connected: !!v?.connected };
         }
         return result;
       } catch { return {}; }
     };
     const saveAIConnections = (connections) => {
-      try {
-        const safe = _sanitizeConnections(connections);
-        const toStore = {};
-        for (const [k, v] of Object.entries(safe)) {
-          toStore[k] = { ...v, apiKey: v.apiKey ? _obfuscate(v.apiKey) : '' };
-        }
-        localStorage.setItem('oblique:ai-connections', JSON.stringify(toStore));
-      } catch {}
+      // No-op: keys are now managed through SecureKeyVault
+      // Metadata is saved directly via SecureKeyVault.saveMeta()
     };
 
     // ─── MAP CLAUDE JSON TO EDITOR STATE ─────────────────────────────
@@ -5395,13 +5528,17 @@ Resume data:
                         fontSize: 13, fontFamily: 'inherit', outline: 'none',
                       }}
                     />
-                    <button onClick={() => {
+                    <button onClick={async () => {
                       if (aiKey.trim()) {
+                        // Store key in encrypted vault (memory + AES-256-GCM sessionStorage)
+                        await SecureKeyVault.setKey(aiProvider, aiKey.trim());
+                        SecureKeyVault.saveMeta(aiProvider, { connected: true });
                         setAiKeySaved(true);
-                        // Also save to shared AI connections for the editor
-                        const existing = loadAIConnections();
-                        existing[aiProvider] = { key: aiKey.trim(), connected: true };
-                        saveAIConnections(existing);
+                        // Update React state (key masked — never stored in state)
+                        setAiConnections(prev => ({
+                          ...prev,
+                          [aiProvider]: { key: '••••••••', connected: true }
+                        }));
                       }
                     }} style={{
                       padding: '8px 16px', borderRadius: 8, border: 'none', cursor: 'pointer',
@@ -5410,6 +5547,13 @@ Resume data:
                     }}>
                       {aiKeySaved ? 'Saved' : 'Save'}
                     </button>
+                  </div>
+                  <div style={{
+                    fontSize: 11, color: '#22c55e', background: '#22c55e12', border: '1px solid #22c55e30',
+                    borderRadius: 8, padding: '8px 12px', marginBottom: 10, lineHeight: 1.5,
+                  }}>
+                    &#x1f512; Your key is encrypted with AES-256-GCM and stored only in this browser session.
+                    It is never saved to disk, never sent to our servers, and is wiped when you close this tab.
                   </div>
                   <div style={{ fontSize: 12, color: theme.textMuted, lineHeight: 2 }}>
                     FREE providers (no credit card needed):
