@@ -7,14 +7,14 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Playfair+Display:ital,wght@0,400;0,700;1,400;1,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
-  <script src="https://unpkg.com/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" integrity="sha384-MhvFknC0AhqKZXwSCyPeIirpE1IhTafmLXTvTCai5pxjAqFcqEAAqKH/2lXrFVPn" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" integrity="sha384-VQePqH/QE94Buf4g/4MI5NrqDYjdqT7JW6KzhieQUlw6w7U7VD59fPqCAunpXEu6" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js" integrity="sha384-RtnJVik7wuedvaD33OAmqud3NpHYg9cC7fusyNSj4XOXRJnBWGONH1Q5bJ4xuJXZ" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js" integrity="sha384-ZZ1pncU3bQe8y31yfZdMFdSpttDoPmOZg2wguVK9almUodir1PghgT0eY7Mrty8H" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/jspdf@2.5.2/dist/jspdf.umd.min.js" integrity="sha384-en/ztfPSRkGfME4KIm05joYXynqzUgbsG5nMrj/xEFAHXkeZfO3yMK8QQ+mP7p1/" crossorigin="anonymous"></script>
   <!-- Firebase Auth -->
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js" integrity="sha384-AQ3POAMqIhwS81FrUH95ekxqBZHeP5tG2JfEL3+7GuTtfRLWnrRh32UxwzM+//A9" crossorigin="anonymous"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js" integrity="sha384-TnlRYaR4JYz/lpaGuaiU61PjNberSA4vjLjtF+oRC/IkohkJqnWxw5EmDSOt1vA1" crossorigin="anonymous"></script>
   <script>
     // Firebase configuration
     const firebaseConfig = {
@@ -458,8 +458,17 @@
           const cid = state.customSections[action.index]?.id;
           return { ...state, customSections: state.customSections.filter((_, i) => i !== action.index), sectionOrder: state.sectionOrder.filter(s => s !== 'custom_' + cid) };
         }
-        case 'LOAD_IMPORTED_DATA':
-          return { ...state, ...action.value };
+        case 'LOAD_IMPORTED_DATA': {
+          // SECURITY: Whitelist allowed keys to prevent prototype pollution
+          const ALLOWED_KEYS = ['personalInfo','summary','experience','education','skills','projects','certifications','customSections','sectionOrder','activeTemplate','activePalette','showPhoto','photoData','columnConfig','fontConfig','sectionConfig'];
+          const safeData = {};
+          if (action.value && typeof action.value === 'object') {
+            for (const key of ALLOWED_KEYS) {
+              if (key in action.value) safeData[key] = action.value[key];
+            }
+          }
+          return { ...state, ...safeData };
+        }
         default:
           return state;
       }
@@ -3714,7 +3723,11 @@
 
       const importShareCode = useCallback((code) => {
         try {
-          const data = JSON.parse(decodeURIComponent(escape(atob(code.trim()))));
+          if (!code || code.trim().length > 500000) { alert('Share code too large or empty'); return; }
+          const raw = decodeURIComponent(escape(atob(code.trim())));
+          const data = JSON.parse(raw);
+          if (typeof data !== 'object' || data === null || Array.isArray(data)) { alert('Invalid share code format'); return; }
+          // Sanitized by LOAD_IMPORTED_DATA reducer (whitelist)
           dispatch({ type: 'LOAD_IMPORTED_DATA', value: data });
           setShowShareCode(false);
         } catch { alert('Invalid share code'); }
@@ -3944,30 +3957,34 @@
       }, [pdfPreview, analytics]);
 
       // ─── DOCX Export (#10) ────────────────────────────
+      // SECURITY: HTML entity escaping for DOCX export
+      const escHtml = (str) => {
+        if (!str) return '';
+        return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+      };
+
       const exportToDOCX = useCallback(async () => {
         setExporting(true);
         try {
-          // Simple DOCX via Blob (plain text with formatting markers)
-          // For a real DOCX, you'd use the docx library — this creates a clean .doc-compatible HTML
           const name = state.personalInfo?.name || 'Resume';
           const p = state.personalInfo;
           let html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"><style>body{font-family:Calibri,sans-serif;font-size:11pt;color:#1a1a1a;line-height:1.5;margin:72pt}h1{font-size:18pt;margin:0}h2{font-size:12pt;text-transform:uppercase;color:#444;border-bottom:1pt solid #ccc;padding-bottom:4pt;margin-top:16pt}h3{font-size:11pt;margin:0}ul{padding-left:18pt;margin:4pt 0}.accent{color:${PALETTES[state.activePalette].primary}}.muted{color:#666;font-size:10pt}</style></head><body>`;
-          html += `<h1>${p.name}</h1><p class="accent" style="margin:2pt 0">${p.title}</p>`;
-          html += `<p class="muted">${[p.email, p.phone, p.location, p.linkedin, p.portfolio].filter(Boolean).join(' | ')}</p>`;
-          if (state.summary) html += `<h2>Summary</h2><p>${state.summary}</p>`;
+          html += `<h1>${escHtml(p.name)}</h1><p class="accent" style="margin:2pt 0">${escHtml(p.title)}</p>`;
+          html += `<p class="muted">${[p.email, p.phone, p.location, p.linkedin, p.portfolio].filter(Boolean).map(escHtml).join(' | ')}</p>`;
+          if (state.summary) html += `<h2>Summary</h2><p>${escHtml(state.summary)}</p>`;
           html += `<h2>Experience</h2>`;
           state.experience.forEach(exp => {
-            html += `<h3>${exp.title}</h3><p class="accent" style="margin:0">${exp.company}${exp.location ? ', ' + exp.location : ''} <span class="muted">${exp.startDate} – ${exp.endDate}</span></p><ul>`;
-            exp.bullets.forEach(b => { if (b) html += `<li>${b}</li>`; });
+            html += `<h3>${escHtml(exp.title)}</h3><p class="accent" style="margin:0">${escHtml(exp.company)}${exp.location ? ', ' + escHtml(exp.location) : ''} <span class="muted">${escHtml(exp.startDate)} – ${escHtml(exp.endDate)}</span></p><ul>`;
+            exp.bullets.forEach(b => { if (b) html += `<li>${escHtml(b)}</li>`; });
             html += `</ul>`;
           });
           html += `<h2>Skills</h2>`;
-          state.skills.forEach(sk => { html += `<p><b>${sk.category}:</b> ${sk.items}</p>`; });
+          state.skills.forEach(sk => { html += `<p><b>${escHtml(sk.category)}:</b> ${escHtml(sk.items)}</p>`; });
           html += `<h2>Education</h2>`;
-          state.education.forEach(ed => { html += `<p><b>${ed.degree}</b> — ${ed.school}, ${ed.dates}</p>`; });
+          state.education.forEach(ed => { html += `<p><b>${escHtml(ed.degree)}</b> — ${escHtml(ed.school)}, ${escHtml(ed.dates)}</p>`; });
           if (state.certifications.length) {
             html += `<h2>Certifications</h2>`;
-            state.certifications.forEach(c => { if (c.name) html += `<p>- ${c.name}</p>`; });
+            state.certifications.forEach(c => { if (c.name) html += `<p>- ${escHtml(c.name)}</p>`; });
           }
           html += `</body></html>`;
           const blob = new Blob([html], { type: 'application/msword' });
@@ -5000,15 +5017,56 @@ Resume data:
       return text;
     };
 
-    // Load/save AI connections from localStorage
+    // ─── SECURE KEY STORAGE ─────────────────────────────────
+    // Obfuscate API keys in localStorage to prevent casual exposure
+    const _obfuscate = (str) => {
+      if (!str) return str;
+      try { return btoa(str.split('').map((c,i) => String.fromCharCode(c.charCodeAt(0) ^ (42 + (i % 17)))).join('')); }
+      catch { return str; }
+    };
+    const _deobfuscate = (str) => {
+      if (!str) return str;
+      try { return atob(str).split('').map((c,i) => String.fromCharCode(c.charCodeAt(0) ^ (42 + (i % 17)))).join(''); }
+      catch { return str; }
+    };
+    const _sanitizeConnections = (conns) => {
+      // Whitelist only known safe keys to prevent prototype pollution
+      const allowed = ['provider','apiKey','model','baseUrl','connected'];
+      const clean = {};
+      for (const [k, v] of Object.entries(conns)) {
+        if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+        if (typeof v === 'object' && v !== null) {
+          clean[k] = {};
+          for (const [ik, iv] of Object.entries(v)) {
+            if (allowed.includes(ik)) clean[k][ik] = typeof iv === 'string' ? iv : String(iv);
+          }
+        }
+      }
+      return clean;
+    };
+    // Load/save AI connections from localStorage (keys are obfuscated)
     const loadAIConnections = () => {
       try {
         const saved = localStorage.getItem('oblique:ai-connections');
-        return saved ? JSON.parse(saved) : {};
+        if (!saved) return {};
+        const parsed = JSON.parse(saved);
+        const result = {};
+        for (const [k, v] of Object.entries(parsed)) {
+          if (k === '__proto__' || k === 'constructor') continue;
+          result[k] = { ...v, apiKey: v.apiKey ? _deobfuscate(v.apiKey) : '' };
+        }
+        return result;
       } catch { return {}; }
     };
     const saveAIConnections = (connections) => {
-      try { localStorage.setItem('oblique:ai-connections', JSON.stringify(connections)); } catch {}
+      try {
+        const safe = _sanitizeConnections(connections);
+        const toStore = {};
+        for (const [k, v] of Object.entries(safe)) {
+          toStore[k] = { ...v, apiKey: v.apiKey ? _obfuscate(v.apiKey) : '' };
+        }
+        localStorage.setItem('oblique:ai-connections', JSON.stringify(toStore));
+      } catch {}
     };
 
     // ─── MAP CLAUDE JSON TO EDITOR STATE ─────────────────────────────
